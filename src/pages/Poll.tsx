@@ -1,9 +1,13 @@
+// client/src/pages/Poll.tsx
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { ApiResponse } from "../shared/api.ts";
 import { isApiResponse } from "../shared/api.ts";
 import type { Poll } from "../shared/domain.ts";
 import { isPoll } from "../shared/guards.ts";
+
+import { connect, disconnect, onVoteAck, onVoteUpdate, vote } from "../services/vote.ts";
+import type { VoteAckMessage, VotesUpdateMessage } from "../shared/ws.ts";
 
 const API_BASE = "http://127.0.0.1:8000";
 
@@ -14,6 +18,9 @@ export default function PollPage() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const [voteError, setVoteError] = useState<string | null>(null);
+
+  // ---------- TP3 : Charger le sondage ----------
   useEffect(() => {
     if (!selectedPoll) return;
 
@@ -23,6 +30,7 @@ export default function PollPage() {
       try {
         setLoading(true);
         setErrorMsg(null);
+        setVoteError(null);
 
         const response = await fetch(`${API_BASE}/polls/${selectedPoll}`);
 
@@ -33,7 +41,6 @@ export default function PollPage() {
 
         const jsonUnknown = (await response.json()) as unknown;
 
-        // ✅ plus de <Poll>
         if (!isApiResponse(jsonUnknown)) {
           throw new Error("Réponse API invalide (shape).");
         }
@@ -63,6 +70,47 @@ export default function PollPage() {
     };
   }, [selectedPoll]);
 
+  // ---------- TP4 : Connexion WS après chargement ----------
+  useEffect(() => {
+    if (!poll) return;
+
+    connect(poll.id);
+    return () => disconnect();
+  }, [poll]);
+
+  // ---------- TP4 : Ack (vote traité / erreur) ----------
+  useEffect(() => {
+    return onVoteAck((ack: VoteAckMessage) => {
+      if (!ack.success) {
+        setVoteError(ack.error?.message || "Vote failed");
+      } else {
+        setVoteError(null);
+      }
+    });
+  }, []);
+
+  // ---------- TP4 : Mise à jour des compteurs ----------
+  useEffect(() => {
+    return onVoteUpdate((update: VotesUpdateMessage) => {
+      setPoll((prev) => {
+        if (!prev) return prev;
+        if (prev.id !== update.pollId) return prev;
+
+        return {
+          ...prev,
+          options: prev.options.map((opt) =>
+            opt.id === update.optionId ? { ...opt, voteCount: update.voteCount } : opt
+          ),
+        };
+      });
+    });
+  }, []);
+
+  function handleVote(optionId: string) {
+    const r = vote(optionId /*, userId optionnel */);
+    if (!r.success) setVoteError(r.error ?? "Vote failed");
+  }
+
   return (
     <main id="content" style={{ padding: 16 }}>
       <p>
@@ -77,10 +125,15 @@ export default function PollPage() {
           <h1>{poll.title}</h1>
           {poll.description && <p>{poll.description}</p>}
 
+          {voteError && <p style={{ color: "crimson" }}>Vote error: {voteError}</p>}
+
           <h2>Options</h2>
           <ul>
             {poll.options.map((opt) => (
               <li key={opt.id}>
+                <button type="button" onClick={() => handleVote(opt.id)}>
+                  Vote
+                </button>{" "}
                 {opt.text} — <strong>{opt.voteCount}</strong>
               </li>
             ))}
